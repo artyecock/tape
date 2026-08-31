@@ -1,0 +1,926 @@
+/* Simple CMS Proxy server for Linux TAPE requests */
+Address Command
+
+/*
+** Clear global variables
+*/
+global. = ""
+
+/*
+** global.volser_policy
+**
+** If global.volser_policy is set to "READ", then Linux tape
+** mount requests for specific volsers will be forced to Read-Only
+** mode.
+*/
+global.volser_policy = "READ"
+
+/*
+** global.max_retention_policy = 120
+**
+** Restrict maximum retention period to 120 days
+*/
+global.max_retention_policy = 120
+
+/*
+** global.linux
+**
+** List of Linux virtual machines that are permitted to
+** request tape mounts.  global.linux can be a list of CMS
+** userids of authorized Linux guests, or it can be a list of
+** Linux guest IP addresses (but not both).
+**
+** If global.linux is a list of IP addresses, the Authorized()
+** function will be called with the normalized IP address of
+** the inbound Linux connection.  This IP address will be checked
+** against the IP addresses in global.linux, so proper IP address
+** (normalization) rules apply.  "10.100.50.005" will NOT match
+** "10.100.50.5" (normalized).  IP address normalization is default
+** behavior with REXX/Sockets.
+**
+** Example:
+**  global.linux = "10.100.50.5 10.100.50.7 2100:351:76::5"
+**
+** If global.linux is a list of CMS userids of Linux guests,
+** then the Authorized() function will be called with the CMS
+** userid of the Linux server.
+**
+** Example:
+**  global.linux = "LXARTY LXFRED LXBARNEY"
+**
+** If global.linux is set to "", then RACROUTE will be used to
+** authorize the CMS userid supplied to the Authorized() function.
+** RACROUTE will let you use RACF for authorization instead of
+** maintaining the global.linux list.
+**
+** If RACROUTE is desired:
+**
+**  You MUST be using global.transport = "IUCV" (otherwise, you'll
+**  need a scheme to map IP addresses to existing RACF user accounts;
+**  if your Linux servers are registerd in DNS using their CMS userid
+**  as their hostname, then that value can be used for authorization
+**  checking).  Example: "lxarty.company.com" might map to CMS user
+**  LXARTY, which can be used by the Authorized() function.
+**
+**  The TAPROXY server will need to be in the $RACROUT group:
+**  EXEC RAC ADDGROUP TAPROXY GROUP($RACROUT)
+**
+**  A resource called TAPROXY.MOUNT will need to be defined:
+**  EXEC RAC RDEFINE FACILITY TAPROXY.MOUNT OWNER(SYS1) UACC(NONE)
+**
+**  A permit to TAPROXY.MOUNT will need to be created for each Linux guest:
+**  EXEC RAC PERMIT TAPROXY.MOUNT CLASS(FACILITY) ID(LXARTY) ACCESS(READ)
+**
+**  Then set global.linux="" to indicate that RACROUTE should be used.
+*/
+global.linux = "LXARTY 10.203.221.230"
+
+/*
+** Preferred communication method for inbound tape mounts:
+**
+** global.transport = "TCP/IP"   - Use TCP/IP IPv4 or IPv6 (with TLS)
+** global.transport = "IUCV"     - Use OpenEdition AF_IUCV sockets
+**
+** You can also use IUCV CP Directory statements to control
+** authorization to use this proxy service.
+**
+** For global.transport = "TCP/IP", you could authorize clients
+** by IP address or DNS name.
+*/
+global.transport = "IUCV"
+
+/*
+** global.label
+**
+** If global.tansport = "TCP/IP" is set and TLS is desired,
+** set global.tls_label to the value of the TLS label to be
+** used for TLS communication. This TLS label must be present
+** in your GSKADMIN certificate database.
+*/
+global.tls_label = ""
+
+/*
+** global.TCPIP
+**
+** Set global.TCPIP to the CMS userid of the TCPIP stack to
+** use for TAPROXY TCP/IP communications.
+*/
+global.TCPIP = "TCPIP2"
+
+/*
+** Main processing loop
+*/
+Call Initialize
+
+Do Forever
+   Call ProcessRequest
+   If result<>"" Then Leave
+End
+
+Call Terminate
+
+Exit
+
+/*
+** Determine if supplied user is authorized to request tape mounts
+**
+** If global.linux does not contain any userids, we'll try to use
+** RACROUTE to check authorization.
+*/
+Authorized: Procedure Expose global.
+   Arg user .
+
+   If Words(global.linux)>0 Then ,
+      If Wordpos(user, global.linux) > 0 Then Return 0
+      Else Return 4
+   Else ,
+      'RACROUTE ENTITY(TAPROXY.MOUNT) CLASS(FACILITY) USER('user') ACCESS(READ)'
+Return rc
+
+/*
+** ProcessRequest
+*/
+ProcessRequest:
+   If global.transport="IUCV" Then Do
+      /*
+      ** For AF_IUCV, the strategy is to issue an Accept()
+      ** in blocking mode and wait for inbound requests.
+      ** When a connection arrives, process the request
+      ** issue a response, close the socket and wait for
+      ** another connection.
+      **
+      ** When I finish the AF_IUCV support for REXX/Sockets,
+      ** the AF_INET, AF_INET6 and AF_IUCV code can be
+      ** merged into a single, simple process.  Until then,
+      ** we need a second "transport" process that uses
+      ** OpenEdition AF_IUCV sockets.  Sigh.
+      */
+      addrlen = 28
+      Address OPENVM 'BPX1ACP socket addrlen sockaddr' ,
+                     'return_value return_code reason_code'
+
+      If return_value<0 Then Do
+         Say ">ACCEPT: return_code:" return_code", reason_code:" reason_code
+         Return 8
+      End
+
+      client_socket = return_value
+      client_userid = Substr(sockaddr, 17, 8)
+
+      Say "Client:" client_userid
+
+      Say ">Socket" client_socket "has been accepted"
+
+      /*
+      ** Authorize requestor
+      */
+      If Authorized(client_userid)<>0 Then Do
+         Say ">Client" client_userid "was not authorized"
+
+         Address OPENVM 'BPX1CLO client_socket' ,
+                        'return_value return_code reason_code'
+
+         If return_value=0 Then Do
+            Say ">Socket" client_socket "has been closed"
+            Return ""
+         End
+         Else Return 4
+      End
+
+      buflen = 4096
+      buffer = Copies(' ', buflen)
+      alet = 0
+
+      /*
+      ** Read request data from the client socket
+      */
+      Address OPENVM 'BPX1RED client_socket buffer alet buflen' ,
+                     'return_value return_code reason_code'
+
+      If return_value>0 Then Do
+         length = return_value
+         buffer = Substr(buffer, 1, length)
+         'PIPE var buffer ] xlate a2e ] var buffer'
+
+         /*
+         ** Say length "bytes received, data:" buffer
+         */
+
+         Call ProcessMount buffer
+
+         'PIPE var result ] xlate e2a ] var result'
+
+         /*
+         ** Send the response back to the client
+         */
+         alet = 0
+         datalen = Length(result)
+
+         Address OPENVM 'BPX1WRT client_socket result alet datalen' ,
+                    'return_value return_code reason_code'
+
+         If return_value=datalen Then ,
+            Say ">Socket" client_socket "has been sent" datalen "bytes"
+         Else Do
+            Say ">WRITE: return_code:" return_code", reason_code:" reason_code
+            Return 8
+         End
+
+         /*
+         ** Close the client socket
+         */
+         Address OPENVM 'BPX1CLO client_socket' ,
+                        'return_value return_code reason_code'
+
+         If return_value=0 Then ,
+            Say ">Socket" client_socket "has been closed"
+         Else Do
+            Say ">CLOSE: return_code:" return_code", reason_code:" reason_code
+            Return 8
+         End
+
+         Return ""
+      End
+      Else Do
+         Say ">READ: return_code:" return_code", reason_code:" reason_code
+         If return_value=0 Then Do
+            Address OPENVM 'BPX1CLO client_socket' ,
+                           'return_value return_code reason_code'
+
+            If return_value=0 Then ,
+               Say ">Socket" client_socket "has been closed"
+
+            Return ""
+         End
+         Else Return 4
+      End
+   End
+   Else If global.transport="MYIUCV" Then Do
+      Parse Value Socket('Accept', socket) With rc new_socket name
+
+      Parse Value Socket('GetPeerName', new_socket) With rc peer_name
+      Say "Peer socket name:" peer_name
+      Parse Value Socket('GetSockName', new_socket) With rc my_name
+      Say "My socket name:  " my_name
+
+      Parse Var peer_name . peer .
+
+      /*
+      ** Authorize requestor
+      */
+      If Authorized(peer)<>0 Then ,
+         Say ">Client" peer "was not authorized"
+      Else Do
+
+         Parse Value Socket('Read', new_socket) With rc length data
+
+         /*
+         ** Say length "bytes received, data:" data
+         */
+
+         Call ProcessMount data
+
+         Parse Value Socket('Write', new_socket, result) With rc length .
+         If rc=0 Then ,
+            Say ">Socket" new_socket "has been sent" length "bytes"
+      End
+
+      rc = Socket('Close', new_socket)
+      If rc=0 Then ,
+         Say ">Socket" new_socket "has been closed"
+      Return ""
+   End
+   Else Do
+      /*
+      ** Wait for a response or a timeout
+      */
+      Say "Waiting for an" family6 "or" family4 "connection on port:" port
+
+      readmask = sockets
+      Do Forever
+
+         /*
+         ** Sample Select with a 600-second timeout:
+         */
+         result = Socket('Select', 'Read' readmask 'Write * Exception *', 600)
+
+         Parse Var result ,
+                   rc count "READ" r_socks "WRITE" w_socks "EXCEPTION" e_socks
+
+         r_socks = Space(r_socks)
+         w_socks = Space(w_socks)
+         e_socks = Space(e_socks)
+
+         If count="SOCKET" Then count=1
+         If count>0 Then Do
+            Say "Number of sockets with activity:             " count
+            If r_socks<>"" Then ,
+               Say "   Socket numbers with data ready to be READ:" r_socks
+            If w_socks<>"" Then ,
+               Say "   Socket numbers available for WRITE:       " w_socks
+            If e_socks<>"" Then ,
+               Say "   Socket numbers with EXCEPTIONs:           " e_socks
+
+            Do While r_socks<>""
+               Parse Var r_socks s r_socks
+
+               Parse Value Socket('Accept', s) With rc new_socket name
+               Say "New socket" new_socket "created as" name
+
+               If global.tls_label<>"" Then Do
+                  Say "Starting TLS"
+
+                  Parse Value Socket('IOCTL', new_socket, 'SIOCSECSERVER', global.tls_label, 'ClientCertCheck=Preferred') With rc errno text
+                  If rc<>0 Then Say "TLS handshake failed:" text
+
+                  /*
+                  ** Display the SSL status of the specified socket:
+                  **
+                  ** Sample response:
+                  ** "0 SecDynamic TLS12 SHA1 DES3 ECDHE_RSA 168"
+                  */
+                  Parse Value Socket('IOCTL', new_socket, 'SIOCSECSTATUS') With rc setting .
+                  Say "TLS setting is:" setting
+
+                  /*
+                  ** Since ClientCertCheck was NOT "none", we may have
+                  ** access to a Client (partner) certificate, so let's
+                  ** ask for a few fields from the certificate.
+                  */
+                  Parse Value Socket('IOCTL',new_socket,'SIOCGCERTDATA','Partner','DN CERT_ISSUER_COMMON_NAME') With rc count values
+
+                  If rc=0 Then Do i=1 To count
+                     Parse Var values key"='"value"'" values
+                     Say Space(key)":" value
+                  End
+               End
+
+               Parse Value Socket('GetPeerName', new_socket) With rc peer_name
+               Say "Peer socket name:" peer_name
+               Parse Value Socket('GetSockName', new_socket) With rc my_name
+               Say "My socket name:  " my_name
+
+               Parse Var peer_name . . peer .
+               If global.linux = "" Then Do
+                  Parse Value Socket('Resolve', peer) With rc . host"." .
+                  If host<>"" Then peer = host
+               End
+               Else If Pos(".", global.linux)>0 Then Do
+                  Parse Value Socket('Resolve', peer) With rc . dns .
+                  If dns<>"" Then peer = Word(Translate(dns, ' ', '.'), 1)
+               End
+
+               /*
+               ** Authorize requestor
+               */
+               If Authorized(peer)<>0 Then ,
+                  Say ">Client" peer "was not authorized"
+               Else Do
+
+                  Parse Value Socket('Read', new_socket) With rc length data
+                  /*
+                  ** Say length "bytes received, data:" data
+                  */
+
+                  Call ProcessMount data
+
+                  Parse Value Socket('Write', new_socket, result) With rc length .
+                  If rc=0 Then ,
+                     Say ">Socket" new_socket "has been sent" length "bytes"
+               End
+
+               rc = Socket('Close', new_socket)
+               If rc=0 Then ,
+                  Say ">Socket" new_socket "has been closed"
+            End
+         End
+         Else ,
+            Say "Timeout!"
+
+         Say Socket('SocketSetStatus')
+      End
+   End
+Return 4
+
+ProcessMount:
+   Arg data
+
+   LF = '25'x              /* Line terminator for multi-line error msgs */
+
+   /*
+   ** Parse the request and proxy the tape mount
+   **
+   ** MOUNT SCRATCH MODE=WRITE VDEV=0181 VMUSER=LXARTY LOCALUSER=arty AUTH=
+   ** MOUNT VOLSER=ABC123 MODE=WRITE VDEV=0181 RETPD=120 VMUSER=LXARTY LOCALUSER=arty AUTH=
+   */
+   Parse Var data . volser . "MODE="mode .
+   Parse Var data          . "VDEV="vdev .
+   Parse Var data          . "RETPD="retpd .
+   Parse Var data          . "VMUSER="linux .
+   Parse Var data          . "LOCALUSER="user .
+   Parse Var data          . "AUTH="password
+
+   days = ""
+   If mode="WRITE" Then days = "Retention:" retpd
+
+   Say ""
+   Say "Request for" volser "from" user "on" linux "Mode:" mode days
+
+   retention = ""
+   If mode="WRITE" Then Do
+      If retpd<>"" Then retention = "EXPDAYS" retpd
+
+      If retpd>global.max_retention_policy Then Do
+         error = "Requested retention of" retpd "days exceeds the configured maximum of" global.max_retention_policy "days."
+         Say "Denied:" error
+         Say ""
+         Return error ]] '00'x
+      End
+   End
+
+   If Substr(volser,1,7)="VOLSER=" Then Do
+      Parse Var volser "VOLSER="volser .
+
+      access = mode
+      If mode="WRITE" Then access = "ALTER"
+      Say ""
+      Say "ÕIs" user "authorized to mount tape" volser"?å"
+      Say "ÕRACROUTE ENTITY("volser") CLASS(TAPEVOL) ID("user") ACCESS("access")å"
+      Say ""
+
+      /*
+      ** Local policy may wish to require that tape mounts by specific
+      ** volser be made in READ mode only.
+      ** (Maybe allow the root user to mount tapes by volser in WRITE
+      ** mode?)
+      */
+      If global.volser_policy="READ" Then Do
+         If mode="WRITE" Then Do
+            error = "Tape mounts by volser are only permitted in READ mode."
+            Say "Denied:" error
+            Say ""
+            Return error ]] '00'x
+         End
+         retention = ""
+      End
+
+      Say "TAPCMD TAPEMNT VOL" volser mode "VDEV" vdev "ATT" linux retention
+      "TAPCMD TAPEMNT VOL" volser mode "VDEV" vdev "ATT" linux retention
+/*
+**    'PIPE cms ... ] stem messages'
+**    last = messages.0
+**    Parse Var messages.last . code . "with volume " volser"."
+** 000205: EUMTAP0109I Device 0B20 attached to LXARTY as 0181 with volume B10999.
+**    If code<>"EUMTAP0109I" Then foo
+**    Else, add " VOLSER="volser to response
+*/
+
+      Say ""
+      /* Next 2 lines are for VM:Tape */
+/*
+**    Say 'VMTAPE MOUNT' volser vdev '( FOR' linux mode
+**    'VMTAPE MOUNT' volser vdev '( FOR' linux mode
+*/
+   End
+   Else Do
+      Say "TAPCMD TAPEMNT SCR SCRATCH TAPEPOOL VDEV" vdev "ATT" linux retention
+      "TAPCMD TAPEMNT SCR SCRATCH TAPEPOOL VDEV" vdev "ATT" linux retention
+      Say ""
+      /* Next 3 lines are for VM:Tape */
+/*
+**    If retpd<>"" Then retention = "RETPD" retpd
+**    Say 'VMTAPE MOUNT SCRATCH' vdev '( FOR' linux mode retention
+**    'VMTAPE MOUNT SCRATCH' vdev '( FOR' linux mode retention
+*/
+   End
+
+   /*
+   ** Wire-Protocol:
+   **
+   ** A positive response to a tape mount request is "OK"
+   ** followed by a x'00' (string) termination character.
+   **
+   ** "OK VOLSER=xxxxxx" ]] '00'x is also acceptable.
+   **
+   ** For error conditions, we can send back an error message
+   ** instead of "OK".  The error message may span several lines
+   ** if delimited with EBCDIC Line Feed characters (x'25').  The
+   ** EBCDIC Line Feed character (x'25') is properly translated
+   ** to an ASCII Line Feed character (x'0a').  The error string
+   ** MUST be terminated with a x'00' character.
+   **
+   ** Our '00'x termination character is guaranteed to survive
+   ** EBCDIC/ASCII translation (by definition).  We just need to
+   ** be careful to ensure that our responses do not contain any
+   ** other instances of '00'x within the text.
+   */
+Return "OK" ]] '00'x
+
+
+/*
+** Initialize will set up a listener socket
+** for TCP/IP or IUCV
+*/
+Initialize:
+   If global.transport="IUCV" Then Do
+      /*
+      ** Create an AF_IUCV socket via the BPX1 interface
+      */
+      domain = 17                  /* AF_IUCV */
+      type = 1                     /* SockStream */
+      protocol = 0
+      dimension = 1
+      socket_vector = ""
+      return_value = ""
+      return_code = 0
+      reason_code = 0
+
+      Address OPENVM 'BPX1SOC domain type protocol dimension socket_vector' ,
+                     'return_value return_code reason_code'
+
+      /*
+      ** Parse the socket descriptor from the socket vector
+      */
+      socket = X2D(Substr(C2X(socket_vector), 1, 8))
+
+      If return_value<>0 Then Do
+         Say "RC="return_code", Reason_Code="reason_code "from Socket()"
+         Exit 8
+      End
+
+      Say "TAPROXY AF_IUCV server running"
+
+      /*
+      ** Bind the socket
+      */
+      sockaddr_length = 32         /* Size of the AF_IUCV sockaddr  */
+      family = 17                  /* AF_IUCV address family value  */
+      port = '0'                   /* Port number, 0 for AF_IUCV    */
+      addr = '0'                   /* IP Addr, 0 for AF_IUCV        */
+      nodeid = '        '          /* Node Id, blank for AF_IUCV    */
+      IUCV_name = 'TAPESRV'
+
+      /* Build the sockaddr */
+      sockaddr = Right(X2c(D2X(sockaddr_length)),1,X2C(D2X(0)))]] ,
+                   Right(X2C(D2X(family)),1,X2C(D2X(0)))]] ,
+                   Right(X2C(D2X(port)),2,X2C(D2X(0))) ]] ,
+                   Right(X2C(D2X(addr)),4,X2C(D2X(0))) ]] ,
+                   Left(nodeid, 8, ' ') ]] ,
+                   Left(Userid(), 8, ' ') ]] ,
+                   Left(IUCV_name, 8, ' ')
+
+      Address OPENVM 'BPX1BND socket sockaddr_length sockaddr' ,
+                     'return_value return_code reason_code'
+
+      If return_value<>0 Then Do
+         Say "RC="return_code", Reason_Code="reason_code "from Bind()"
+         Exit 8
+      End
+
+      If return_code=0 Then Say ">Socket" socket "bound to" IUCV_name "(AF_IUCV)"
+
+      operation = 2
+      sockaddr = Copies(' ', sockaddr_length)
+      Address OPENVM 'BPX1GNM socket operation sockaddr_length sockaddr' ,
+                     'return_value return_code reason_code'
+      /*
+      ** name = Substr(sockaddr,17, 16)
+      ** Say "Sockname:" name
+      */
+      /*
+      **   Listen on the bound socket
+      */
+      Address OPENVM 'BPX1LSN socket 0 return_value return_code reason_code'
+
+      If return_value<>0 Then Do
+         Say "RC="return_code", Reason_Code="reason_code "from Listen()"
+         Exit 8
+      End
+      If return_code=0 Then Say ">Socket" socket "is in Listen mode"
+   End
+   Else If global.transport="MYIUCV" Then Do
+      /*
+      ** Drop IBM default version of RXSOCKET since
+      ** we want IPv6, TLS and AF_IUCV support:
+      */
+      'NUCXDROP RXSOCKET'
+
+      'EXEC VMLINK TCPMAINT 592 (NOTYPE'
+
+      IUCV_name = 'TAPESRV'
+
+      rc = Socket('Initialize', 'TAproxy', 40, global.TCPIP)
+
+      Parse Value Socket('Socket', 'AF_IUCV') With rc socket .
+
+      Parse Value Socket('Bind', socket, 'AF_IUCV *' IUCV_name) With rc .
+      If rc=0 Then Say ">Socket" socket "bound to" IUCV_name "(AF_IUCV)"
+      Else Exit 8
+
+      Parse Value Socket('Listen', socket) With rc .
+      If rc=0 Then Say ">Socket" socket "is in Listen mode"
+      Else Exit 8
+
+      rc = Socket('SetSockOpt', socket, 'Sol_Socket', 'So_ASCII', 'On')
+      Say "TAPROXY REXX/Sockets AF_IUCV server running"
+   End
+   Else If global.transport="TCP/IP" Then Do
+      /*
+      ** Drop IBM default version of RXSOCKET since
+      ** we want IPv6 and TLS support:
+      */
+      'NUCXDROP RXSOCKET'
+
+      'EXEC VMLINK TCPMAINT 592 (NOTYPE'
+
+      family4 = "AF_INET"
+      family6 = "AF_INET6"
+      port    = 4181
+
+      /*
+      ** TLS label for server, defined in GSKADMIN database:
+      */
+      label = global.tls_label
+
+      /*
+      ** Create a new socketset, then retrieve our hostname and domain_name:
+      */
+      rc = Socket('Initialize', 'TAproxy', 40, global.TCPIP)
+
+      Parse Value Socket('GetHostName') With rc hostname
+      Parse Value Socket('GetDomainName') With rc domain_name
+
+      /*
+      ** Determine if an IPv6 address has been configured:
+      */
+      Parse Value Socket('Socket', family6) With rc s .
+      Parse Value Socket('Ioctl', s, 'SIOCGHOMEIF6') With rc ipv6_address .
+
+      If ipv6_address<>"" Then version="6"
+      Else version="4"
+
+      rc = Socket('Close', s)
+
+      Say "TAPROXY IPv"version "server running on:" hostname"."domain_name
+
+      /*
+      ** Check the available Address Families
+      **
+      ** Call GetAddrInfo to return "name" strings which we
+      ** can use to create the appropriate sockets and Bind
+      ** each socket to an appropriate passive port.
+      **
+      ** AI_UNSPEC is the default, but is included here to
+      ** illustrate that both IPv6 *and* IPv4 information
+      ** is being requested.
+      **
+      ** This particular GetAddrInfo call will return only
+      ** 2 "name" strings.  The first "name" will be for
+      ** IPv6, and the second will be for IPv4.
+      **
+      ** We don't want to use a "host" parameter here.
+      */
+      Parse Value Socket('GetAddrInfo', , port, 'AF_UNSPEC AI_PASSIVE') With rc . names
+
+      /*
+      ** Create the ephemeral sockets
+      */
+      sockets = ""
+      Do While names<>""
+         Parse Var names ai_family ai_port ai_address names
+
+         If ai_family<>"" Then Do
+            Parse Value Socket('Socket', ai_family) With rc s .
+            If rc=0 Then Do
+               sockets = sockets s
+
+               rc = Socket('SetSockOpt', s, 'SOL_socket', 'SO_reuseaddr', 'On')
+               rc = Socket('Bind', s, ai_family ai_port ai_address)
+               If rc=0 Then Say ">Socket" s "bound to" ai_address".."ai_port "("ai_family")"
+            End
+         End
+      End
+
+      /*
+      ** We called GetAddrInfo without specifying a host parameter, so
+      ** we'll only have 2 "names" returned, and thus only 2 sockets
+      ** in our "sockets" list (the first one is guaranteed to be
+      ** the IPv6 socket since we used AF_UNSPEC (the default) on
+      ** the GetAddrInfo call.)
+      */
+      s6 = Word(sockets,1)
+      s4 = Word(sockets,2)
+
+      /*
+      ** Check if TLS label exists
+      */
+      Parse Value Socket('IOCTL', s6, 'SIOCTLSQUERY', label) With rc errno text
+      If rc<>0 Then Do
+         Say ""
+         Say "   TLS label" label "does not exist ("text")"
+         Say ""
+         Say "   Server will run without SSL enabled"
+         Say ""
+
+         TLS = 0
+      End
+      Else TLS = 1
+
+      rc = Socket('IOCTL', s4, 'SIOCTLSQUERY', label)
+
+      Say "Ephemeral sockets created:" sockets
+
+      /*
+      ** Now start listening
+      **
+      ** It's always a good idea to ensure that a Listen is
+      ** active for any socket specified in a Select mask.
+      ** (Otherwise, such a socket will always appear as
+      **  "ready" for READ or WRITE after a Select even
+      **  when a socket connection has not been made.)
+      */
+      If version="6" Then Do
+         rc = Socket('Listen', s6, 10)
+         If rc=0 Then Say ">Socket" s6 "is in Listen mode"
+         sockets = s6
+      End
+      Else Do
+         rc = Socket('Listen', s4, 10)
+         If rc=0 Then Say ">Socket" s4 "is in Listen mode"
+         sockets = s4
+      End
+
+      /*
+      ** Get the IPv6 and IPv4 client identifiers (for GiveSocket/TakeSocket)
+      **
+      ** (Remember, the clientIds are different for each family)
+      */
+      Parse Value Socket('GetClientId', family6) With rc s6_clientid
+      Parse Value Socket('GetClientId', family4) With rc s4_clientid
+
+      Say "IPv6 client ID:" s6_clientid
+      Say "IPv4 client ID:" s4_clientid
+
+      /*
+      ** Set ephemeral sockets to non-blocking
+      */
+      rc = Socket('Ioctl', s6, 'FIONBIO', 'On')
+      rc = Socket('Ioctl', s4, 'FIONBIO', 'On')
+
+      /*
+      ** Set automatic EBCDIC<->ASCII data translation
+      ** (Our EBCDIC is translated to ASCII, received ASCII
+      **  is translated to EBCDIC)
+      **
+      ** Only use this if connecting to Internet sites.
+      */
+      rc = Socket('SetSockOpt', s6, 'Sol_Socket', 'So_ASCII', 'On')
+      rc = Socket('SetSockOpt', s4, 'Sol_Socket', 'So_ASCII', 'On')
+   End
+Return
+
+/*
+** Terminate will tear down a listener socket
+** for TCP/IP or IUCV
+*/
+Terminate:
+   If global.transport="IUCV" Then Do
+      /*
+      **   Close the client socket connection
+      */
+      Address OPENVM 'BPX1CLO client_socket return_value return_code reason_code'
+
+      If return_value<>0 Then Do
+         Say "RC="return_code", Reason_Code="reason_code "from Close()"
+      End
+
+      /*
+      **   Close the ephemeral socket connection
+      */
+      Address OPENVM 'BPX1CLO socket return_value return_code reason_code'
+
+      If return_value<>0 Then Do
+         Say "RC="return_code", Reason_Code="reason_code "from Close()"
+      End
+
+      If return_value<0 Then Return 8
+      Else Return 0
+   End
+   Else If global.transport="MYIUCV" Then Do
+      If Symbol('new_socket')="VAR" Then ,
+         rc = Socket('Close', new_socket)
+
+      rc = Socket('Close', socket)
+
+      rc = Socket('Terminate')
+   End
+   Else If global.transport="TCP/IP" Then Do
+      /*
+      ** Close new_socket, if we Accepted a connection
+      */
+      If Symbol('new_socket')="VAR" Then ,
+         rc = Socket('Close', new_socket)
+
+      /*
+      ** Close ephemeral sockets
+      */
+      Do i=1 To Words(sockets)
+         rc = Socket('Close', Word(sockets,i))
+      End
+
+      Say Socket('SocketSetStatus')
+
+      /*
+      ** Terminate the socketset
+      */
+      rc = Socket('Terminate')
+
+   End
+Return 0
+
+/*
+** Sample WAIT routine that can be used in place of using
+** Socket('Select', ...).  This is useful in a CMS Multitasking
+** environment when there are many events (besides sockets)
+** that need to be handled.
+*/
+WaitForEvent:
+   Arg seconds .
+
+   Call apiload 'CMREXX'
+   Call apiload 'VMREXMT'
+   Call apiload 'VMREXRET'
+
+   userword = "RXSOCKET"
+
+   timertype     = vm_tmr_timertype_cpu
+   cycle         = vm_tmr_cycle_single
+   intervalunits = vm_tmr_intunit_milli
+   interval      = seconds * 1000
+
+   Call CSL 'TimerStartInt retcode reascode timer_token',
+            'timertype cycle intervalunits interval userword'
+
+   Say "TimerStartInt:" retcode reascode
+
+   monitor_flag.1 = vm_evn_no_auto_delete
+   monitor_flag.2 = vm_evn_async_monitor
+   monitor_flag.3 = vm_evn_bind_loose_signals
+
+   monitor_flag_size = 3
+
+   events = 'VMTIMER('X2C(D2X(timer_token,8))]]'E']]userword') VMSOCKET'
+   number_of_events = Words(events)
+
+   Do i=1 To number_of_events
+
+      event_name_address = ''
+      event_key_address = '*'
+
+      Parse Value Word(events,i) With event_name_address '(' event_key_address ')'
+
+      event_name_address.i = event_name_address
+      event_name_length.i = Length(event_name_address.i)
+      event_key_address.i = event_key_address
+      event_key_length.i = Length(event_key_address.i)
+
+      bound_signal_limit.i = -1
+   End
+
+   event_count = 1
+
+   Call CSL 'EventMonitorCreate retcode reascode monitor_token',
+            'monitor_flag monitor_flag_size number_of_events',
+            'event_name_address event_name_length event_key_address',
+            'event_key_length bound_signal_limit event_count'
+
+   Say "EventMonitorCreate:" retcode reascode
+
+   Call CSL 'EventWait retcode reascode monitor_token number_of_events',
+            'event_flag'
+
+   Say "EventWait:" retcode reascode
+
+   Say "> Number of events:" number_of_events
+
+   index = 2
+   retlen = 200
+
+   Call CSL 'EventRetrieve retcode reascode monitor_token index retdata',
+            'retlen signal_len'
+
+   Say "EventRetrieve:" retcode reascode signal_len
+
+   Say "> Event Data:" retdata
+
+   Call CSL 'EventMonitorReset retcode reascode monitor_token'
+
+   Say "EventMonitorReset:" retcode reascode
+
+   Call CSL 'EventMonitorDelete retcode reascode monitor_token'
+
+   Say "EventMonitorDelete:" retcode reascode
+
+   result = "0" Space(retdata)
+
+   Return result

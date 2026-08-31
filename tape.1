@@ -1,0 +1,993 @@
+.TH TAPE 1 "2026" "Local" "User Commands"
+.SH NAME
+tape \- mount, detach, rewind, position, read/write, catalog, verify, query, and reset z/VM tape devices from Linux
+.SH SYNOPSIS
+.B tape mount
+[\fB\-\-volser\fR|\fB\-\-vol\fR|\fB\-v\fR \fIvolser\fR]
+[\fB\-\-mode\fR|\fB\-m\fR \fIREAD\fR|\fIWRITE\fR]
+[\fB\-\-read\fR|\fB\-R\fR]
+[\fB\-\-write\fR|\fB\-W\fR]
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-retain\fR|\fB\-r\fR \fIdays\fR]
+[\fIcommon-options\fR]
+.br
+.B tape detach
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+.br
+.B tape det
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+.br
+.B tape rewind
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+.br
+.B tape rew
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+.br
+.B tape fsf
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+[\fB\-\-count\fR|\fB\-n\fR \fIN\fR]
+.br
+.B tape write
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+[\fB\-\-in\fR|\fB\-i\fR \fIfile\fR]
+[\fB\-\-dsn\fR|\fB\-f\fR \fIname\fR]
+[\fB\-\-append\fR|\fB\-A\fR]
+[\fB\-\-extra\fR|\fB\-x\fR]
+.br
+.B tape read
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+[\fB\-\-out\fR|\fB\-o\fR \fIfile\fR]
+.br
+.B tape wtm
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+.br
+.B tape scan
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+\fB\-\-dsn\fR|\fB\-f\fR \fIname\fR
+[\fB\-\-count\fR|\fB\-n\fR \fIN\fR]
+[\fB\-\-before\fR|\fB\-b\fR]
+.br
+.B tape map
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+.br
+.B tape verify
+[\fB\-\-dev\fR|\fB\-d\fR \fIvdev\fR]
+[\fB\-\-path\fR|\fB\-p\fR \fIdevice-path\fR]
+[\fB\-\-checksum\fR|\fB\-C\fR \fIhex\fR]
+[\fB\-\-out\fR|\fB\-o\fR \fIfile\fR]
+.br
+.B tape query
+.br
+.B tape reset
+[\fB\-\-all\fR|\fB\-a\fR]
+.br
+.B tape \-\-help\fR|\fB\-h
+.SH DESCRIPTION
+.B tape
+is a client for the z/VM CMS Tape Proxy server. It requests virtual tape
+mounts and detaches from IBM Tape Manager for z/VM on behalf of a Linux
+guest running under z/VM, and manages the resulting device node ownership
+and permissions so that the requesting user, and only that user, can
+access the mounted tape.
+.PP
+The CMS Tape Proxy authenticates each request and issues the appropriate
+IBM Tape Manager for z/VM command, attaching a virtual tape drive to the
+Linux guest at the requested (or an automatically selected) virtual
+device address. A udev-invoked helper program applies ownership and
+permissions to the resulting device nodes once the driver creates them,
+and reverts them to root ownership when the tape is detached.
+.PP
+.B tape
+runs setuid root. It communicates with the CMS Tape Proxy over TCP/IP
+(optionally with TLS) or over an AF_IUCV socket, and identifies the
+invoking user via the real uid of the calling process, not any value
+supplied by the user on the command line.
+.PP
+Beyond mount/detach, \fBtape\fR provides a small set of convenience
+operations (\fBwrite\fR, \fBread\fR, \fBscan\fR, \fBmap\fR, \fBverify\fR)
+for working with Standard Label (SL) tapes directly from Linux. These
+are deliberately basic conveniences for mainframe programmers who need
+to read or write labeled tape files from a Linux guest \(em not a
+reimplementation of full mainframe tape-management semantics. See
+\fBSTANDARD LABEL HANDLING\fR below for exactly what is, and is not,
+implemented.
+.PP
+Because \fBtape write\fR and \fBtape read\fR move opaque binary data to
+and from standard input/output when \fB\-\-in\fR/\fB\-\-out\fR are not
+given, \fBtape\fR composes naturally with \fBtar\fR(1) and similar
+tools to back up and restore whole directory trees as a single SL file.
+See \fBBACKING UP AND RESTORING FILESYSTEMS\fR below.
+.SH COMMANDS
+.TP
+.B mount
+Request that a tape be mounted. If \fB\-\-volser\fR (or its aliases
+\fB\-\-vol\fR, \fB\-v\fR) is omitted, a SCRATCH tape is requested
+instead, and the mount mode is forced to WRITE. For scratch mounts,
+\fBtape\fR reads the tape's VOL1 standard label directly off the media
+to determine the assigned volser; if the label cannot be read, the
+mount is treated as failed \(em the device is detached automatically and
+the command exits non-zero. On success, the volser, virtual device
+address, mode, and (for WRITE mounts only) retention period are
+reported, along with the device path to use for I/O.
+.TP
+.B detach\fR, \fBdet
+Detach a mounted tape. If neither \fB\-\-dev\fR nor \fB\-\-path\fR is
+given, the command defaults to the single tape device currently owned by
+the invoking user. If the user owns more than one mounted tape, the
+command lists them and requires \fB\-\-dev\fR to disambiguate. If the
+user owns none, an error is reported.
+.TP
+.B rewind\fR, \fBrew
+Rewind a mounted tape, equivalent to \fBtouch\fR on the corresponding
+rewind-on-close device node, but easier to remember and type. Target
+selection (\fB\-\-dev\fR, \fB\-\-path\fR, or default-to-owned-device)
+follows the same rules as \fBdetach\fR.
+.TP
+.B fsf
+Forward Space File: advance the tape past the next tape mark, using the
+tape driver's own file-marking support. With \fB\-\-count\fR (alias
+\fB\-n\fR), advances past that many consecutive tape marks instead of
+just one. Target selection follows the same rules as \fBdetach\fR.
+.TP
+.B write
+Write one labeled SL file to the tape: HDR1/HDR2 labels, the data
+itself, EOF1/EOF2 trailer labels, then a pair of tape marks. By default,
+data is read from standard input (e.g. \fBtape write < myfile.bin\fR);
+with \fB\-\-in\fR (alias \fB\-i\fR), data is read from the named file
+instead. Each invocation writes exactly one file; to write several
+files, invoke \fBtape write\fR once per file (e.g. in a shell loop),
+which also has the useful side effect of giving each file the dataset
+name derived from its own filename. See \fBEXAMPLES\fR.
+.IP
+With \fB\-\-append\fR (alias \fB\-A\fR), the tape is first positioned
+past every existing file, so this write extends the tape instead of
+overwriting whatever the tape happened to be positioned at. With
+\fB\-\-extra\fR (alias \fB\-x\fR), periodic progress is printed to
+standard error while writing, and a sha256 checksum of the data (not
+including the SL labels) is computed and shown in the completion
+message; see \fBVERIFYING BACKUPS\fR.
+.IP
+Requires the target device to have been mounted in WRITE mode. The data
+itself is written and read as opaque binary content \(em \fBtape\fR
+does not interpret, convert, or care whether it is ASCII, EBCDIC, or
+anything else; only the SL labels surrounding it are EBCDIC-encoded.
+Target selection follows the same rules as \fBdetach\fR. To replace an
+existing file (and overwrite everything physically after it on the
+tape), first position the tape with
+\fBtape scan \-\-dsn \fIname\fB \-\-before\fR; see \fBREPLACING A FILE\fR
+below.
+.TP
+.B read
+Read one file from the tape until a tape mark or end of data is
+reached. By default, data is written to standard output (e.g.
+\fBtape read > myfile.bin\fR); with \fB\-\-out\fR (alias \fB\-o\fR),
+data is written to the named file instead. Like \fBwrite\fR, the data
+is copied verbatim with no encoding interpretation. Target selection
+follows the same rules as \fBdetach\fR.
+.TP
+.B wtm
+Write a single tape mark with no data transfer. Requires the target
+device to have been mounted in WRITE mode. Target selection follows the
+same rules as \fBdetach\fR.
+.TP
+.B scan
+Search the mounted tape's SL file labels for a file whose HDR1 dataset
+name matches \fB\-\-dsn\fR (alias \fB\-f\fR), which is required for this
+command. The match is case-insensitive. If the tape contains more than
+one file with the same dataset name, \fB\-\-count\fR (alias \fB\-n\fR)
+selects which occurrence to locate, 1-based (default: 1, the first
+occurrence). If found, the tape is positioned to read that file's data
+with \fBtape read\fR (or \fBtape verify\fR) \(em or, with \fB\-\-before\fR
+(alias \fB\-b\fR), positioned instead to overwrite that file (and
+everything physically after it) with \fBtape write\fR; see
+\fBREPLACING A FILE\fR below. If the requested occurrence is not found,
+the command fails (non-zero exit), reports how many occurrences (if
+any) actually exist, and repositions the tape to first write position.
+Target selection follows the same rules as \fBdetach\fR.
+.TP
+.B map
+List every SL file on the mounted tape: file number, dataset name,
+creation and expiration dates, and block count. Always finishes by
+repositioning the tape to first write position, regardless of what it
+finds. Target selection follows the same rules as \fBdetach\fR.
+.TP
+.B verify
+Read the currently positioned file (use \fBtape scan\fR first) and
+compute its sha256 checksum, over the data only \(em not the surrounding
+SL labels. If \fB\-\-checksum\fR (alias \fB\-C\fR) is given, the
+computed checksum is compared against it and a match or mismatch is
+reported, with a non-zero exit on mismatch. If \fB\-\-checksum\fR is
+omitted, the checksum is simply computed and displayed with no
+comparison performed \(em useful for recovering a checksum reported
+earlier by \fBtape write \-\-extra\fR and since lost, or for capturing a
+reference value to compare against later. With \fB\-\-out\fR (alias
+\fB\-o\fR), the data is also saved to a file while being verified. See
+\fBVERIFYING BACKUPS\fR below for what each mode actually proves.
+Target selection follows the same rules as \fBdetach\fR.
+.TP
+.B query
+List currently mounted tapes. A regular user sees only tapes they
+themselves have mounted. The root user sees every mounted tape on the
+system, along with the owning user, mode, volser, and device path.
+.TP
+.B reset
+Detach every tape device currently owned by the invoking user, and clear
+any stale lock or owner-request files left behind by an interrupted or
+inconsistent mount \(em for example, a mount that succeeded on the CMS
+Tape Proxy side but whose client-side TLS handshake never completed, or
+a client process terminated abnormally (\fBkill \-9\fR) before it could
+perform its own cleanup.
+.IP
+With \fB\-\-all\fR (alias \fB\-a\fR), restricted to the root user, every
+tape device in the configured range is reset regardless of owner.
+Without \fB\-\-all\fR, root's \fBreset\fR affects only devices root
+itself owns, the same as any other user; \fB\-\-all\fR must be given
+explicitly for a system-wide sweep, so that an administrative recovery
+action never silently affects other users' in-progress work by default.
+.SH STANDARD LABEL HANDLING
+.B tape
+assumes tapes are Standard Label (SL) format. Every label record it
+reads or writes \(em VOL1, HDR1, HDR2, EOF1, EOF2 \(em is EBCDIC text on
+the tape (see \fBebcdic_codepage\fR under \fBFILES\fR); this applies to
+all of them uniformly, not only VOL1. The actual data content moved by
+\fBtape write\fR, \fBtape read\fR, and \fBtape verify\fR is never
+interpreted or converted by \fBtape\fR in any way: it is copied (or
+hashed) as opaque binary, whatever encoding it happens to be in.
+.PP
+When a virtual tape device is attached (mounted), it is already
+positioned by the attach process just after the first tape mark on the
+tape \(em the standard "ready to write" or "ready to read" position for
+an existing volser, requiring no explicit action by \fBtape\fR itself,
+for both READ and WRITE mounts.
+.PP
+The one exception is a SCRATCH mount: because the CMS Tape Proxy does
+not necessarily report the volser it assigned, \fBtape\fR must read the
+tape's VOL1 label directly to determine it, which requires an explicit
+rewind; \fBtape\fR restores the standard position afterward. If the
+VOL1 label cannot be read at all, the mount is treated as a failure and
+the device is automatically detached.
+.PP
+Tapes prepared by IBM Tape Manager's scratch-pool initialization have
+been observed to carry a placeholder record immediately after VOL1 \(em
+labeled "HDR1" but not a real file entry (no matching HDR2, filled with
+non-standard content), directly followed by a tape mark. \fBtape\fR
+treats this region as opaque, read-only pre-first-file metadata and
+always skips over it, both when mounting and when \fBscan\fR, \fBmap\fR,
+or \fBwrite \-\-append\fR walk the tape.
+.PP
+.B tape write
+constructs full SL records for each file: HDR1 and HDR2 (dataset name,
+creation/expiration dates, block length) before the data, and EOF1 and
+EOF2 (identical layout, with the actual block count now known) after
+it, following each label group and the data with a tape mark. Record
+format is recorded as \fBU\fR (undefined) \(em each physical block
+written is a single opaque record with no internal structure, which is
+the correct description of what \fBtape write\fR does. The HDR1/EOF1
+"file sequence number" field is always written as 0: no reliable source
+exists for this program to populate it meaningfully, and nothing in
+\fBtape\fR reads this field back for any purpose \(em navigation is
+always done by physically walking labels and tape marks. After the
+final EOF2, two consecutive tape marks are written and then backspaced
+over by one to leave the tape positioned to extend the volume with
+another file; note that on some hardware/driver combinations this
+backspace has been observed not to reliably collapse the two marks,
+meaning more than one tape mark can end up separating consecutive
+files. \fBtape scan\fR, \fBtape map\fR, and \fBtape write \-\-append\fR
+all tolerate this variability when walking forward.
+.PP
+.B tape write \-\-append
+locates the end of the tape's existing content by walking every
+existing file's records explicitly (never guessing at a tapemark count
+for a nonexistent "next" file, which is exactly the operation whose
+mark count is hardware-dependent) and stops immediately after the last
+file's EOF2, which \fBtape\fR's own reader already accepts as a valid
+position from which to begin a new file's HDR1. This requires two full
+passes over the tape's existing files, which is reasonable given
+sequential media but means \fB\-\-append\fR's cost scales with how many
+files are already on the tape.
+.PP
+.B tape scan
+and
+.B tape map
+walk the SL label structure described above to locate files by dataset
+name or catalog everything present. Files written by tools other than
+\fBtape write\fR that do not follow this exact structure (for example,
+without EOF1/EOF2) may not scan, map, or append-position correctly.
+This has no effect on \fBtape read\fR or \fBtape write\fR themselves,
+which operate on raw block and tape-mark boundaries and are completely
+unaffected by label content either way \(em existing Linux procedures
+that read or write tapes without using SL records continue to work
+exactly as they always have. SL support is purely additive.
+.PP
+.B tape
+does not write or rewrite the VOL1 volume label; volume initialization
+remains the responsibility of the mainframe-side tape management system.
+.SH REPLACING A FILE
+.B tape scan
+without \fB\-\-before\fR intentionally leaves the tape positioned to
+\fIread\fR the found file \(em at the start of its DATA, past its
+HDR1/HDR2 labels. Issuing \fBtape write\fR directly from that position
+would leave the old HDR1/HDR2 on the tape while writing new labels and
+data into the middle of the old file's DATA, corrupting the label
+structure for anything that scans the tape afterward.
+.PP
+To replace a file (and everything physically after it on the tape) with
+one or more new files, use \fB\-\-before\fR (alias \fB\-b\fR) on the
+locating \fBscan\fR:
+.RS
+.nf
+tape scan \-\-dsn MYFILE \-\-before
+tape write \-\-in newfile.dat \-\-dsn MYFILE
+.fi
+.RE
+\fB\-\-before\fR positions the tape by backing up exactly the two
+physical records (HDR1 and HDR2) that were just read to identify the
+match, landing precisely at the start of HDR1 regardless of any
+ambiguity in surrounding tape-mark counts (see \fBSTANDARD LABEL
+HANDLING\fR) \(em a fixed tape-mark backspace count was deliberately
+avoided as unreliable. The subsequent \fBtape write\fR then overwrites
+the old HDR1 onward with a fresh label group, data, and trailer, exactly
+as it would for any other write. Additional \fBtape write\fR calls
+after the first append further files normally (or use
+\fBtape write \-\-append\fR to unambiguously extend past whatever the
+new end of the tape now is). The old file's data, and anything that
+followed it, remains physically present further along the tape but is
+no longer reachable through \fBtape read\fR, \fBtape scan\fR,
+\fBtape map\fR, or \fBtape verify\fR once new tape marks have been
+written over that position \(em normal behavior for sequential tape
+media, where nothing is erased, only superseded.
+.SH BACKING UP AND RESTORING FILESYSTEMS
+Because \fBtape write\fR and \fBtape read\fR move an opaque byte stream
+to and from standard input/output when \fB\-\-in\fR/\fB\-\-out\fR are
+not used, they compose directly with \fBtar\fR(1) (or any similar
+archiver) to back up and restore a directory tree as one SL file:
+.RS
+.nf
+tar cf \- /home | tape write \-\-dsn HOME_BACKUP \-\-extra
+.fi
+.RE
+Restoring the whole tree, or just one file or subdirectory, both start
+the same way \(em locate the file with \fBscan\fR, then let \fBtar\fR
+itself decide what to extract:
+.RS
+.nf
+tape scan \-\-dsn HOME_BACKUP
+tape read | tar xf \- \-C /restore
+.RE
+.RS
+tape scan \-\-dsn HOME_BACKUP
+tape read | tar xf \- \-C /restore home/arty/one.txt
+.fi
+.RE
+Restoring a single file or subdirectory out of a large archive does not
+require reading or rewriting anything extra: \fBtar\fR reads forward
+through the stream and simply discards data for members it was not
+asked to extract, which is inexpensive on sequential media.
+.PP
+Separate backup jobs are usually best kept as separate tape files (one
+\fBtape write\fR per top-level directory or generation) rather than one
+combined \fBtar\fR stream, since this lets \fBtape map\fR show a real
+catalog of what is on the tape and \fBtape scan \-\-dsn\fR jump directly
+to the piece you want:
+.RS
+.nf
+tar cf \- /etc  | tape write \-\-dsn ETC_20260816
+tar cf \- /home | tape write \-\-dsn HOME_20260816 \-\-append
+tar cf \- /var  | tape write \-\-dsn VAR_20260816  \-\-append
+.fi
+.RE
+See \fBVERIFYING BACKUPS\fR for how to confirm a backup is intact, and
+\fBREPLACING A FILE\fR for retiring an old generation in place. Note
+that \fBtape\fR provides no multi-volume support (a backup exceeding
+one physical tape's capacity is not automatically continued onto a
+second volume) and imposes no size or format awareness beyond moving
+bytes \(em compression or encryption, if wanted, should be applied as
+additional pipeline stages (e.g. \fBtar cf \- /home | zstd | tape
+write ...\fR) rather than expected of \fBtape\fR itself.
+.SH VERIFYING BACKUPS
+.B tape verify
+answers two different questions depending on where the comparison
+checksum comes from, and it is worth being precise about which one you
+are actually asking.
+.PP
+Comparing against the checksum \fBtape write \-\-extra\fR reported at
+write time confirms that the tape still physically contains, byte for
+byte, what \fBtape\fR believed it sent to the drive. This is a genuine
+round-trip check through the recording medium \(em a successful
+\fBwrite\fR(2) call does not by itself guarantee correct physical
+recording, and media can also degrade later \(em but it does not rule
+out a bug that computes the same (wrong) checksum on both occasions,
+since both values pass through the same code.
+.PP
+Comparing against a checksum computed independently from the original
+source data (for example, running \fBtar cf \- /home | sha256sum\fR
+again against the live filesystem) is a stronger, fully end-to-end
+check: it confirms the tape matches the source through two entirely
+separate computations of the reference value, not just a
+self-comparison. Whenever practical, prefer this form for validating
+that a backup actually captured what was intended.
+.PP
+None of this reflects a lack of trust in the tape medium itself; modern
+virtual tape is frequently disk-backed and considerably more reliable
+than older physical media. The failures a source-data comparison
+actually catches tend to be procedural rather than hardware related
+\(em an outdated build, a mistaken \fBtar\fR invocation, a truncated
+pipe, or an unrelated overwrite of the wrong dataset name \(em and
+these are exactly the failures medium reliability cannot rule out.
+Checksumming here is best thought of as backup hygiene: cheap
+insurance worth using for anything that actually matters, and freely
+skippable for routine, low-stakes writes.
+.PP
+.B tape verify
+run with no \fB\-\-checksum\fR at all performs no comparison; it simply
+computes and displays the checksum of the positioned file, for example
+to recover one that was lost from a prior \fBtape write \-\-extra\fR
+message, or to record a reference value for later comparison.
+.SH MOUNT OPTIONS
+.TP
+.BR \-\-volser " " \fIvolser\fR ", " \-\-vol " " \fIvolser\fR ", " \-v " " \fIvolser\fR
+Volser of the tape to mount. If omitted, a SCRATCH tape is requested.
+Automatically converted to uppercase.
+.TP
+.BR \-\-mode " | " \-m " " \fIREAD\fR|\fIWRITE\fR
+Mount mode. Case-insensitive; automatically converted to uppercase.
+Defaults to READ. SCRATCH tapes are always mounted WRITE; specifying
+\fB\-\-mode READ\fR (or \fB\-\-read\fR/\fB\-R\fR) together with a
+SCRATCH mount (i.e. no \fB\-\-volser\fR) is an error.
+.TP
+.B \-\-read\fR, \fB\-R
+Alias for \fB\-\-mode READ\fR.
+.TP
+.B \-\-write\fR, \fB\-W
+Alias for \fB\-\-mode WRITE\fR.
+.TP
+.BR \-\-dev " | " \-d " " \fIvdev\fR
+Virtual device address to use, in any of the forms \fI181\fR,
+\fI0181\fR, \fI0x181\fR, or \fI0.0.0181\fR. If omitted, the first free
+address in the configured range (default \fI0180\fR\-\fI018F\fR) is
+selected and atomically reserved before the mount request is sent.
+.TP
+.BR \-\-retain " | " \-r " " \fIdays\fR
+Retention period in days. Defaults to 7, or the value of
+\fBretention_default\fR in the configuration file if set. Rejected if it
+exceeds \fBretention_max\fR (see \fBFILES\fR), when configured. Only
+meaningful for WRITE mounts; not shown in the mount success message for
+READ mounts.
+.SH DETACH / REWIND / FSF / WRITE / READ / WTM / SCAN / MAP / VERIFY OPTIONS
+.TP
+.BR \-\-dev " | " \-d " " \fIvdev\fR
+Virtual device address, in any of the forms accepted by \fB\-\-dev\fR
+under \fBmount\fR. If omitted, defaults to the tape currently owned by
+the invoking user (see \fBCOMMANDS\fR above).
+.TP
+.BR \-\-path " | " \-p " " \fIdevice-path\fR
+Device path (e.g. \fI/dev/ntibm0\fR) identifying the target tape, as an
+alternative to \fB\-\-dev\fR.
+.SH WRITE OPTIONS
+.TP
+.BR \-\-in " | " \-i " " \fIfile\fR
+Read data to write from this file instead of standard input. Accepts a
+single filename; if the shell expands a glob (e.g. \fB*.c\fR) into this
+option, only the first match is used, since \fB\-\-in\fR takes exactly
+one argument. To write several files, invoke \fBtape write\fR once per
+file instead of relying on shell expansion; see \fBEXAMPLES\fR.
+.TP
+.BR \-\-dsn " | " \-f " " \fIname\fR
+HDR1 dataset name, up to 17 characters. If omitted: when \fB\-\-in\fR is
+given, defaults to that file's name (basename only, uppercased,
+truncated to 17 characters); otherwise defaults to the tape's volser.
+.TP
+.B \-\-append\fR, \fB\-A
+Position the tape past every existing file before writing, so this
+call extends the tape with a new file rather than overwriting whatever
+the tape is currently positioned at. Requires two full passes over the
+existing files on the tape (see \fBSTANDARD LABEL HANDLING\fR).
+.TP
+.B \-\-extra\fR, \fB\-x
+Print periodic progress to standard error while writing, and compute a
+sha256 checksum of the data (excluding SL labels), shown in the
+completion message. See \fBVERIFYING BACKUPS\fR.
+.SH READ OPTIONS
+.TP
+.BR \-\-out " | " \-o " " \fIfile\fR
+Write the file's data to this file instead of standard output.
+.SH SCAN OPTIONS
+.TP
+.BR \-\-dsn " | " \-f " " \fIname\fR
+Dataset name to search for; required for this command. Matched
+case-insensitively against each file's HDR1 dataset name.
+.TP
+.BR \-\-count " | " \-n " " \fIN\fR
+Which occurrence of the dataset name to locate, 1-based. Defaults to 1
+(the first occurrence). Useful when \fBtape map\fR shows multiple files
+sharing the same dataset name.
+.TP
+.B \-\-before\fR, \fB\-b
+Position the tape to overwrite the found file (and everything
+physically after it) with \fBtape write\fR, instead of positioning to
+read it. See \fBREPLACING A FILE\fR.
+.SH VERIFY OPTIONS
+.TP
+.BR \-\-checksum " | " \-C " " \fIhex\fR
+Expected sha256 checksum to compare against. Optional: if omitted, the
+checksum of the positioned file is computed and displayed instead of
+compared. See \fBVERIFYING BACKUPS\fR.
+.TP
+.BR \-\-out " | " \-o " " \fIfile\fR
+Also save the file's data to this file while computing its checksum.
+.SH FSF OPTIONS
+.TP
+.BR \-\-count " | " \-n " " \fIN\fR
+Number of consecutive tape marks to forward space past. Defaults to 1.
+Note that \fB\-\-count\fR/\fB\-n\fR means something different on
+\fBscan\fR (an occurrence index) than on \fBfsf\fR (a tape mark count);
+context always disambiguates which is meant.
+.SH RESET OPTIONS
+.TP
+.B \-\-all\fR, \fB\-a
+Restricted to the root user. Resets every tape device in the configured
+range system-wide, rather than only devices owned by the invoking user.
+Using this option as a non-root user is an error.
+.SH TRANSPORT OPTIONS
+.TP
+.BR \-\-host " " \fIhost\fR
+CMS Tape Proxy hostname or IP address (TCP/IP mode). Defaults to
+\fIlocalhost\fR, or the value of \fBhost\fR in the configuration file.
+.TP
+.BR \-\-port " " \fIport\fR
+CMS Tape Proxy TCP port (TCP/IP mode). Defaults to \fI4443\fR, or the
+value of \fBport\fR in the configuration file.
+.TP
+.B \-\-noTLS
+Disable TLS and use plaintext TCP/IP. Equivalent to setting
+\fBtls=no\fR in the configuration file. A \fB\-\-noTLS\fR given on the
+command line always takes precedence over the configuration file's
+\fBtls=\fR setting.
+.TP
+.BR \-\-ca\-file " " \fIpath\fR
+CA bundle used to verify the CMS Tape Proxy's TLS certificate, including
+hostname verification against \fB\-\-host\fR. If not set (and not set
+via \fBca_file\fR in the configuration file), TLS is still used when
+enabled, but the server's certificate is \fBnot\fR verified: the
+connection is encrypted but not authenticated, and a warning is printed
+on every TLS mount. Strongly recommended whenever TLS is enabled.
+.TP
+.BR \-\-key\-file " " \fIpath\fR
+Client private key, for mutual TLS. Must be set together with
+\fB\-\-certificate\fR.
+.TP
+.BR \-\-certificate " " \fIpath\fR
+Client certificate, for mutual TLS. Must be set together with
+\fB\-\-key\-file\fR.
+.TP
+.B \-\-iucv
+Use an AF_IUCV socket instead of TCP/IP. The connection is made in
+blocking mode (see \fBAF_IUCV NOTES\fR); \fB\-\-timeout\fR/\fB\-t\fR is
+accepted but has no practical effect on the connect step itself, since
+IUCV connection failures are reflected immediately by CP. Requires
+\fB\-\-iucv\-userid\fR (or \fBiucv_userid\fR in the configuration file).
+.TP
+.BR \-\-iucv\-userid " " \fIVMUSERID\fR
+Target z/VM guest userid of the CMS Tape Proxy service machine. Required
+when \fB\-\-iucv\fR is used.
+.TP
+.BR \-\-iucv\-name " " \fIname\fR
+Target IUCV application name of the CMS Tape Proxy. Defaults to
+\fITAPESRV\fR, or the value of \fBiucv_name\fR in the configuration
+file.
+.SH COMMON OPTIONS
+.TP
+.BR \-\-config " | " \-c " " \fIpath\fR
+Path to an alternate configuration file. See \fBFILES\fR below for the
+default search order.
+.TP
+.BR \-\-password " | " \-P " " \fIpass\fR
+Password presented to the CMS Tape Proxy, if required by its
+authentication scheme. May also be set via \fBpassword\fR in the
+configuration file. Not applicable when \fB\-\-iucv\fR is used, since
+IUCV authorization is enforced by z/VM's CP directory rather than a
+shared secret (see \fBSECURITY\fR).
+.TP
+.BR \-\-timeout " | " \-t " " \fIseconds\fR
+Timeout, in seconds, to wait for the mounted tape's device node to
+appear and become owned by the invoking user before reporting failure.
+Defaults to 30, or the value of \fBtimeout\fR in the configuration file.
+Does not affect the AF_IUCV connect step itself; see \fB\-\-iucv\fR.
+.TP
+.B \-\-debug\fR, \fB\-D
+Print diagnostic detail to standard error.
+.TP
+.B \-\-help\fR, \fB\-h
+Display usage and exit.
+.PP
+Note: \fB\-\-host\fR, \fB\-\-port\fR, \fB\-\-noTLS\fR, \fB\-\-ca\-file\fR,
+\fB\-\-key\-file\fR, \fB\-\-certificate\fR, \fB\-\-iucv\fR,
+\fB\-\-iucv\-userid\fR, and \fB\-\-iucv\-name\fR have no short-option
+form, since these are typically set once via the configuration file
+rather than supplied interactively on each invocation.
+.SH AF_IUCV NOTES
+When \fB\-\-iucv\fR is used, the connection is established with a
+blocking \fBconnect\fR(2) call rather than the non-blocking-plus-
+\fBselect\fR(2) pattern used for TCP/IP. This was a deliberate choice
+after testing: non-blocking \fBconnect\fR(2) on \fBAF_IUCV\fR sockets
+was not reliable, and IUCV connection failures (for example, an
+unauthorized target userid) are reported immediately by z/VM's CP
+rather than requiring an asynchronous wait, so there is little
+practical benefit to a non-blocking approach here in the first place.
+\fB\-\-timeout\fR/\fB\-t\fR is still accepted for consistency with the
+TCP/IP path but has no effect on how long the IUCV connect step itself
+can take.
+.PP
+On \fBAF_IUCV\fR sockets, a non-blocking \fBconnect\fR(2) that has not
+yet completed has been observed to report \fBEAGAIN\fR/\fBEWOULDBLOCK\fR
+(errno 11) rather than the \fBEINPROGRESS\fR that most other socket
+families use for the same situation; both are treated equivalently
+wherever this program still checks for that condition, for anyone
+extending this code in the future.
+.SH GROUP MEMBERSHIP REQUIREMENT
+Only members of the Linux group \fBtapes\fR may mount tapes, whether by
+volser or as a scratch request. This is enforced both by filesystem
+permissions on the \fBtape\fR binary itself (owned \fBroot:tapes\fR,
+mode \fI4750\fR, so only \fBtapes\fR group members can execute it at
+all) and, redundantly, by \fBtape mount\fR checking group membership
+directly before contacting the CMS Tape Proxy.
+.PP
+\fBdetach\fR, \fBrewind\fR, \fBfsf\fR, \fBwrite\fR, \fBread\fR,
+\fBwtm\fR, \fBscan\fR, \fBmap\fR, \fBverify\fR, \fBquery\fR, and
+\fBreset\fR additionally require: \fBdetach\fR, \fBrewind\fR, \fBfsf\fR,
+\fBwrite\fR, \fBread\fR, \fBwtm\fR, \fBscan\fR, \fBmap\fR, and
+\fBverify\fR require the invoking user to \fBown\fR the target device
+node (established by device ownership applied at mount time);
+\fBwrite\fR and \fBwtm\fR further require the device to have been
+mounted in WRITE mode; \fBquery\fR restricts a non-root caller's
+results to tapes that user has mounted; and a non-root user's
+\fBreset\fR affects only devices that user itself owns.
+.PP
+Administrators should add authorized users to the \fBtapes\fR group,
+e.g.:
+.RS
+.nf
+usermod \-aG tapes \fIusername\fR
+.fi
+.RE
+.SH DEVICE OWNERSHIP AND PERMISSIONS
+When a tape is mounted, the resulting device node is owned by the
+invoking user and group \fBroot\fR, with permissions set according to
+mount mode:
+.TP
+.B WRITE
+mode \fI0600\fR (read/write by owner only)
+.TP
+.B READ
+mode \fI0400\fR (read-only by owner only)
+.PP
+On detach (including via \fBreset\fR, or automatically if a scratch
+mount's VOL1 label cannot be read), ownership reverts to
+\fBroot:root\fR with permissions \fI0000\fR. Ownership and permission
+changes are applied by a udev-invoked helper program, not by \fBtape\fR
+itself, based on device attach/remove events.
+.PP
+The \fBtape\fR binary itself is owned \fBroot:tapes\fR, mode \fI4750\fR
+(setuid root, group-executable only by \fBtapes\fR members).
+.PP
+The channel-attached tape driver additionally exposes a block-device
+node (\fI/dev/btibm\fIn\fR) alongside the character devices
+(\fI/dev/ntibm\fIn\fR, \fI/dev/rtibm\fIn\fR) used throughout this
+program; \fBtape\fR does not manage ownership of \fI/dev/btibm\fIn\fR
+and has no facility for mounting a filesystem from tape. This is a
+known, deliberately out-of-scope item, not an oversight.
+.SH RECOVERING FROM INCONSISTENT STATE
+Under normal operation, \fBtape mount\fR and \fBtape detach\fR keep the
+following three things synchronized: the actual attached device, a
+per-device lock file under \fI/run/lock/tape\fR used to prevent two
+simultaneous mount requests from racing for the same virtual device
+address, and a per-device owner-request file under \fI/run/tape\fR that
+records who should own the resulting device node.
+.PP
+These can become inconsistent if a mount is interrupted after the CMS
+Tape Proxy has confirmed the mount but before the client finishes
+waiting for the device, or if the \fBtape\fR process is killed
+abnormally before it can run its own cleanup, or if \fBvmcp det\fR is
+issued directly against a device outside of \fBtape detach\fR. In such
+cases a lock or owner-request file may be left behind, owned by root,
+which an unprivileged user cannot remove directly.
+.PP
+None of this affects data already written to tape: each \fBtape write\fR
+call is fully self-contained on the media (see \fBSTANDARD LABEL
+HANDLING\fR), so losing the tracking file has no effect on files already
+written.
+.PP
+Run
+.B tape reset
+to detach any devices still owned by the invoking user and remove any
+stale lock or owner-request files associated with them. See the
+\fBreset\fR entry under \fBCOMMANDS\fR for details, including the
+distinct behavior of \fB\-\-all\fR for the root user.
+.SH SECURITY
+.B tape
+runs setuid root because it must issue \fBchccwdev\fR(8) and
+\fBvmcp\fR(1) commands, and must create files under \fI/run/lock/tape\fR
+and \fI/run/tape\fR that a udev-invoked helper reads to determine device
+ownership. All external commands are invoked directly via
+\fBfork\fR(2)/\fBexecvp\fR(2) rather than through a shell, since setuid
+programs that shell out are subject to the shell's own privilege-drop
+behavior when real and effective uid differ.
+.PP
+Disabling TLS (via \fB\-\-noTLS\fR or \fBtls=no\fR) removes
+transport-layer confidentiality and integrity protection for TCP/IP
+connections to the CMS Tape Proxy. Prefer \fB\-\-iucv\fR where
+available, since AF_IUCV transport is authenticated at the z/VM CP
+directory level regardless of any TLS setting.
+.PP
+When TLS is enabled without \fBca_file\fR configured, the connection is
+encrypted but the server's identity is not verified. Configure
+\fBca_file\fR (and, for mutual TLS, \fBcertificate\fR and \fBkey_file\fR
+together) whenever TLS is used.
+.PP
+When \fB\-\-iucv\fR is used, the identity of the calling Linux guest is
+authenticated by z/VM's CP directory, rather than by a shared secret
+passed over the wire. The identity of the invoking Linux user is
+separately established by this program's setuid-root status and the
+real uid of the calling process.
+.PP
+\fBtape\fR does not write the VOL1 volume label; volume initialization
+remains the responsibility of the mainframe-side tape management system.
+.PP
+\fBtape reset\fR can only detach devices the invoking user already
+owns, unless \fB\-\-all\fR is used, which is restricted to root.
+.PP
+Checksums computed by \fB\-\-extra\fR and \fBtape verify\fR are sha256
+digests of file data only, held in memory for the duration of the
+command and never persisted to disk or to the tape itself; if you want
+to keep one, capture it from the command's output.
+.SH FILES
+.TP
+.I /etc/tape.conf
+System-wide configuration file.
+.TP
+.I ~/.tape.conf
+Per-user configuration file.
+.TP
+.I ./tape.conf
+Configuration file in the current directory.
+.PP
+Configuration files are searched in the order: the path given by
+\fB\-\-config\fR, \fI./tape.conf\fR, \fI~/.tape.conf\fR, then
+\fI/etc/tape.conf\fR. The first file found is used; settings are not
+merged across files.
+.PP
+Recognized configuration keys:
+.RS
+.nf
+host               = \fIhostname\fR
+port               = \fIport\fR
+password           = \fIpassword\fR
+timeout            = \fIseconds\fR      (default 30)
+vdev_min           = \fIhex vdev\fR    (e.g. 180)
+vdev_max           = \fIhex vdev\fR    (e.g. 18F)
+tls                = yes|no           (default yes; overridden by \-\-noTLS)
+ca_file            = \fIpath\fR         (CA bundle to verify server cert)
+key_file           = \fIpath\fR         (client key, mutual TLS)
+certificate        = \fIpath\fR         (client cert, mutual TLS)
+retention_default  = \fIdays\fR         (default 7)
+retention_max      = \fIdays\fR         (no default limit)
+ebcdic_codepage    = \fIcodepage\fR     (default IBM037; applies to ALL
+                                        SL label records - VOL1, HDR1,
+                                        HDR2, EOF1, EOF2 - not just VOL1)
+iucv               = yes|no
+iucv_userid        = \fIVMUSERID\fR
+iucv_name          = \fIname\fR
+.fi
+.RE
+.PP
+Values may be quoted with single or double quotes; blank lines and
+lines beginning with \fB#\fR are ignored. The \fBtls\fR, \fBca_file\fR,
+\fBkey_file\fR, and \fBcertificate\fR keys are ignored when \fBiucv =
+yes\fR. \fBcertificate\fR and \fBkey_file\fR must both be set, or
+neither, for mutual TLS to take effect.
+.TP
+.I /run/lock/tape/\fIvdev\fR.lock
+Transient lock file used to atomically reserve a virtual device address
+during mount processing.
+.TP
+.I /run/tape/\fIvdev\fR.owner
+Transient file recording the owning uid, mode, volser, and retention
+for a mounted device.
+.SH EXIT STATUS
+.B tape
+exits 0 on success and a non-zero value on any error, including
+permission denial, an unavailable or already-reserved device, a failed
+or rejected request from the CMS Tape Proxy, an unreadable VOL1 label on
+a scratch mount, a dataset (or requested occurrence) not found by
+\fBscan\fR, a checksum mismatch reported by \fBverify\fR, or a timeout
+waiting for the device to become available.
+.SH EXAMPLES
+Mount a specific volser for writing on a specific device, with a
+30-day retention:
+.RS
+.nf
+tape mount \-\-volser ABC123 \-\-mode WRITE \-\-dev 181 \-\-retain 30
+tape mount \-v ABC123 \-W \-d 181 \-r 30
+.fi
+.RE
+Mount a volser for reading, letting the system pick a free device:
+.RS
+.nf
+tape mount \-\-vol ABC123
+.fi
+.RE
+Mount a scratch tape:
+.RS
+.nf
+tape mount
+.fi
+.RE
+Write a file to tape (dsn defaults to the file's name, uppercased):
+.RS
+.nf
+tape write \-\-in Makefile
+tape write \-i Makefile
+.fi
+.RE
+Write a file to tape with an explicit dataset name:
+.RS
+.nf
+tape write \-i myfile.bin \-f PAYROLL
+.fi
+.RE
+Write an entire directory of files to tape as one file per name, each
+dsn taken from its own filename:
+.RS
+.nf
+for f in *.c; do tape write \-\-in "$f"; done
+.fi
+.RE
+Read a tape file back to a local file:
+.RS
+.nf
+tape read \-\-out myfile.bin
+tape read \-o myfile.bin
+.fi
+.RE
+Write a tape mark with no data (e.g. to close out a multi-file volume):
+.RS
+.nf
+tape wtm
+.fi
+.RE
+Skip forward past the next tape mark:
+.RS
+.nf
+tape fsf
+.fi
+.RE
+Search for a file by dataset name and read it:
+.RS
+.nf
+tape scan \-\-dsn payroll
+tape read \-o payroll.dat
+.fi
+.RE
+Locate the third file named PAYROLL and read it:
+.RS
+.nf
+tape scan \-f payroll \-n 3
+tape read \-o payroll3.dat
+.fi
+.RE
+Replace an existing file (and everything after it) with a new one:
+.RS
+.nf
+tape scan \-\-dsn payroll \-\-before
+tape write \-i newpayroll.dat \-f PAYROLL
+.fi
+.RE
+List every file on the mounted tape:
+.RS
+.nf
+tape map
+.fi
+.RE
+Back up a directory tree, capturing a checksum:
+.RS
+.nf
+tar cf \- /home | tape write \-\-dsn HOME_BACKUP \-\-extra
+.fi
+.RE
+Restore it in full, or just one file or subdirectory:
+.RS
+.nf
+tape scan \-\-dsn HOME_BACKUP
+tape read | tar xf \- \-C /restore
+tape scan \-\-dsn HOME_BACKUP
+tape read | tar xf \- \-C /restore home/arty/one.txt
+.fi
+.RE
+Add another backup after the first, without disturbing it:
+.RS
+.nf
+tar cf \- /var | tape write \-\-append \-\-dsn VAR_BACKUP
+.fi
+.RE
+Confirm the tape still matches what was written:
+.RS
+.nf
+tape scan \-\-dsn HOME_BACKUP
+tape verify \-C \fI<checksum-from-write>\fR
+.fi
+.RE
+Confirm the tape matches the source data right now (strongest check):
+.RS
+.nf
+tape scan \-\-dsn HOME_BACKUP
+tape verify \-C "$(tar cf \- /home | sha256sum | cut \-d' ' \-f1)"
+.fi
+.RE
+Recover a checksum that was lost, with no comparison:
+.RS
+.nf
+tape scan \-\-dsn HOME_BACKUP
+tape verify
+.fi
+.RE
+Detach the tape currently mounted by the caller:
+.RS
+.nf
+tape detach
+.fi
+.RE
+Detach a specific device:
+.RS
+.nf
+tape det \-\-dev 181
+.fi
+.RE
+Rewind the caller's mounted tape:
+.RS
+.nf
+tape rewind
+.fi
+.RE
+Mount over AF_IUCV instead of TCP/IP:
+.RS
+.nf
+tape mount \-\-iucv \-\-iucv\-userid TAPESRV1 \-\-vol ABC123
+.fi
+.RE
+List the caller's mounted tapes:
+.RS
+.nf
+tape query
+.fi
+.RE
+Clear stuck reservations after an interrupted mount:
+.RS
+.nf
+tape reset
+.fi
+.RE
+Root: reset every user's tapes system-wide:
+.RS
+.nf
+tape reset \-\-all
+.fi
+.RE
+.SH SEE ALSO
+.BR chccwdev (8),
+.BR vmcp (1),
+.BR mt (1),
+.BR tar (1),
+.BR sha256sum (1),
+.BR udev (7)
+.SH AUTHOR
+Local systems programming team.

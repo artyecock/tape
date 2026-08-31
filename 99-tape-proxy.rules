@@ -1,0 +1,13 @@
+# 1. Auto-online tape ccw devices as CP attaches them.
+SUBSYSTEM=="ccw", DRIVERS=="tape_34xx", ATTR{online}=="0", ATTR{online}="1"
+
+# 2. vdev-level attach/detach bookkeeping. %k is the ccw bus id (e.g. "0.0.0181").
+SUBSYSTEM=="ccw", DRIVERS=="tape_34xx", ACTION=="add",    RUN+="/usr/local/bin/tape_mount_helper ATTACH %k"
+SUBSYSTEM=="ccw", DRIVERS=="tape_34xx", ACTION=="remove", RUN+="/usr/local/bin/tape_mount_helper DETACH %k"
+
+# 3. Character device nodes: apply/revert ownership per the owner-request
+#    file tape.c writes to /run/tape/<VDEV>.owner before sending MOUNT.
+#    %n = vdev number, %k = kernel device name (ntibm0, rtibm0, ...).
+KERNEL=="[nr]tibm[0-9]*", ACTION=="add",    RUN+="/usr/local/bin/tape_mount_helper MOUNT %k /dev/%k"
+KERNEL=="[nr]tibm[0-9]*", ACTION=="remove", RUN+="/usr/local/bin/tape_mount_helper UMOUNT %k"
+KERNEL=="btibm[0-9]*",    ACTION=="remove", RUN+="/usr/local/bin/tape_mount_helper UMOUNT %k"
